@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
-from rest_framework_simplejwt.tokens import BlacklistMixin, RefreshToken
+from rest_framework_simplejwt.tokens import BlacklistMixin, RefreshToken, AccessToken
 from rest_framework_simplejwt.views import (
     TokenObtainPairView, 
     TokenBlacklistView, 
@@ -17,74 +17,70 @@ from rest_framework_simplejwt.views import (
 
 from rest_framework.generics import (ListAPIView) 
 
-from .serializers import CustomTokenObtainPairSerializer, UserSerializer, CustomTokenRefreshSerializer
+from .serializers import CustomTokenObtainPairSerializer, UserSerializer, CustomTokenRefreshSerializer, WhiteListTokenDeviceSerializer
+from .models import WhiteListTokenDevice
 #------------------------------------------------------#
 
 class UserListAPIView(ListAPIView):
     serializer_class = UserSerializer
     queryset = User.objects.all()
-
+    
+    def get(self, request, *args, **kwargs):
+        return self.list(request, *args, **kwargs)
+    
 
 
 class Login(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
-    def post(self, request, *args, **kwargs):
+    def post(self, request, *args, **kwargs):        
+        # for key,value in request.META.items():
+        #     print({key:value})
         
         username = request.data.get('username')
-        password = request.data.get('password')
-        
-        
-        # serializer = self.get_serializer(data=request.data)
-        # serializer.is_valid(raise_exception=True)
-        # return Response({
-        #     'AccessToken':serializer.validated_data['access'],
-        #     'RefreshToken':serializer.validated_data['refresh'],
-        # }, status=status.HTTP_200_OK)
-        
+        password = request.data.get('password')        
         user = authenticate(
             username=username,
             password=password
-        )
-        
+        )        
         if user:
-            outstanding_tokens = OutstandingToken.objects.filter(user=user)
+            #validando si existe algun refresh libre antes de iniciar sesion
+            outstanding_tokens = OutstandingToken.objects.filter(user=user)        
+            outstanding_not_blacklisted = []
             
-            # in_outstanding = outstanding_tokens.count()            
-            # outstanding_blacklisted = []            
-            if outstanding_tokens.exists():
-                outstanding_not_blacklisted = []
+            for value in outstanding_tokens:                
+                check = BlacklistedToken.objects.filter(token=value)
+                if not check.exists():
+                    outstanding_not_blacklisted.append(value)               
                 
-                for value in outstanding_tokens:
-                    # print(value)
-                    check = BlacklistedToken.objects.filter(token=value)
-
-                    if not check.exists():
-                        outstanding_not_blacklisted.append(value)
-
-                    # if check.exists():
-                    #     outstanding_blacklisted.append(check.values('token'))
-                    # else:
-                    #     outstanding_not_blacklisted.append(value)
-
+            if outstanding_not_blacklisted:
                 for token in outstanding_not_blacklisted:
                     BlacklistedToken.objects.create(token=token)
-                    print("/////////////////////////////")
-                
-                
-            # print(in_outstanding)
-            # print(outstanding_blacklisted)
-            # print(outstanding_not_blacklisted)
+                    print("/////////////////////////////")            
                         
             serializer = self.get_serializer(data=request.data)
             
-            if serializer.is_valid():                
+            if serializer.is_valid():
+                #asociando el ip y browser al refresh
+                ip = request.META.get('REMOTE_ADDR')
+                browser = request.META.get('HTTP_USER_AGENT')
+                instance = OutstandingToken.objects.get(token=serializer.validated_data['refresh'])
+                
+                whitelist_serializer = WhiteListTokenDeviceSerializer(data={
+                    'ip':ip,
+                    'browser':browser,
+                    'token':instance.id
+                })
+                if whitelist_serializer.is_valid():
+                    whitelist_serializer.save()
+                
                 user_serializer = UserSerializer(user)                
                 return Response({
                     'AccessToken':serializer.validated_data['access'],
                     'RefreshToken':serializer.validated_data['refresh'],
                     'User':user_serializer.data,
                     'Message':'Inicio de sesion exitoso',
+                    #'headers':headers,
                 }, status=status.HTTP_200_OK)
                
         return Response({
@@ -115,52 +111,42 @@ class Logout(TokenBlacklistView):
 
 
 
-class Refresh(TokenRefreshView):
-    #serializer_class = TokenObtainPairSerializer
+class Refresh(TokenRefreshView):    
     serializer_class = CustomTokenRefreshSerializer
     
     def post(self, request, *args, **kwargs):
         
-        refreshtoken = request.data.get('refresh')
+        #validando si el ip y browser de la peticion es el permitido
+        actual_ip = request.META.get('REMOTE_ADDR')
+        actual_browser = request.META.get('HTTP_USER_AGENT')
+                
+        token = request.data.get('refresh')
+        instance = OutstandingToken.objects.get(token=token)
+        instance_device = WhiteListTokenDevice.objects.get(token=instance.id)
+                
+        if actual_ip == instance_device.ip and actual_browser == instance_device.browser:
         
-        serializer = self.get_serializer(data=request.data)
+            serializer = self.get_serializer(data=request.data)
+            try:
+                serializer.is_valid(raise_exception=True)          
 
-        try:
-            serializer.is_valid(raise_exception=True)
-        except TokenError as e:
-            raise InvalidToken(e.args[0])
-        
-        try:            
-            refreshtoken = RefreshToken(refreshtoken)
+                instance = OutstandingToken.objects.get(token=serializer.validated_data['refresh'])
 
-            user = refreshtoken.payload['user_id']        
-            user = User.objects.get(id=user)
+                whitelist_serializer = WhiteListTokenDeviceSerializer(data={
+                    'ip':actual_ip,
+                    'browser':actual_browser,
+                    'token':instance.id
+                })
+                if whitelist_serializer.is_valid():
+                    whitelist_serializer.save()
 
-            outstanding_tokens = OutstandingToken.objects.filter(user=user)
-            #actual_refresh = OutstandingToken.objects.filter(token=request.data.get('refresh')).values('token')
-            # print(actual_refresh)
-            outstanding_not_blacklisted = []
+            except TokenError as e:
+                raise InvalidToken(e.args[0])     
 
-            for value in outstanding_tokens:
-
-                check = BlacklistedToken.objects.filter(token=value)
-
-                if not check.exists():
-                    
-                    outstanding_not_blacklisted.append(value)        
-
-            #outstanding_not_blacklisted.remove(actual_refresh)
-            #print(outstanding_not_blacklisted)
-            for token in outstanding_not_blacklisted:
-                BlacklistedToken.objects.create(token=token)
-                print("/////////////////////////////")
-            
-        except TokenError as e:
-            raise InvalidToken(e.args[0])
-        
-        
-               
+            return Response({
+                'AccessToken':serializer.validated_data['access'],
+                'RefreshToken':serializer.validated_data['refresh'],
+                }, status=status.HTTP_200_OK)
         return Response({
-            'AccessToken':serializer.validated_data['access'],
-            'RefreshToken':serializer.validated_data['refresh'],
-            }, status=status.HTTP_200_OK)
+            'message':'No valido'
+        },status=status.HTTP_401_UNAUTHORIZED)
