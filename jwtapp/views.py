@@ -61,18 +61,25 @@ class Login(TokenObtainPairView):
             serializer = self.get_serializer(data=request.data)
             
             if serializer.is_valid():
-                #asociando el ip y browser al refresh
-                ip = request.META.get('REMOTE_ADDR')
-                browser = request.META.get('HTTP_USER_AGENT')
                 instance = OutstandingToken.objects.get(token=serializer.validated_data['refresh'])
                 
-                whitelist_serializer = WhiteListTokenDeviceSerializer(data={
-                    'ip':ip,
-                    'browser':browser,
-                    'token':instance.id
-                })
-                if whitelist_serializer.is_valid():
-                    whitelist_serializer.save()
+                #asociando el ip y browser al refresh
+                WhiteListTokenDevice.objects.create(
+                    ip = request.META.get('REMOTE_ADDR'),
+                    browser = request.META.get('HTTP_USER_AGENT'),
+                    token=instance.id
+                )
+                
+                # ip = request.META.get('REMOTE_ADDR')
+                # browser = request.META.get('HTTP_USER_AGENT')
+                
+                # whitelist_serializer = WhiteListTokenDeviceSerializer(data={
+                #     'ip':ip,
+                #     'browser':browser,
+                #     'token':instance.id
+                # })
+                # if whitelist_serializer.is_valid():
+                #     whitelist_serializer.save()
                 
                 user_serializer = UserSerializer(user)                
                 return Response({
@@ -118,27 +125,33 @@ class Refresh(TokenRefreshView):
         
         #validando si el ip y browser de la peticion es el permitido
         actual_ip = request.META.get('REMOTE_ADDR')
-        actual_browser = request.META.get('HTTP_USER_AGENT')
-                
+        actual_browser = request.META.get('HTTP_USER_AGENT')                
         token = request.data.get('refresh')
         instance = OutstandingToken.objects.get(token=token)
-        instance_device = WhiteListTokenDevice.objects.get(token=instance.id)
+        # instance_device = WhiteListTokenDevice.objects.get(token=instance.id)
+        
+        device = WhiteListTokenDevice.objects.get(
+            ip=actual_ip,
+            browser=actual_browser,
+            token=instance.id
+            )        
                 
-        if actual_ip == instance_device.ip and actual_browser == instance_device.browser:
+        # if actual_ip == instance_device.ip and actual_browser == instance_device.browser:
+        if device:
         
             serializer = self.get_serializer(data=request.data)
             try:
                 serializer.is_valid(raise_exception=True)          
 
-                instance = OutstandingToken.objects.get(token=serializer.validated_data['refresh'])
+                # instance = OutstandingToken.objects.get(token=serializer.validated_data['refresh'])
 
-                whitelist_serializer = WhiteListTokenDeviceSerializer(data={
-                    'ip':actual_ip,
-                    'browser':actual_browser,
-                    'token':instance.id
-                })
-                if whitelist_serializer.is_valid():
-                    whitelist_serializer.save()
+                # whitelist_serializer = WhiteListTokenDeviceSerializer(data={
+                #     'ip':actual_ip,
+                #     'browser':actual_browser,
+                #     'token':instance.id
+                # })
+                # if whitelist_serializer.is_valid():
+                #     whitelist_serializer.save()
 
             except TokenError as e:
                 raise InvalidToken(e.args[0])     
@@ -147,6 +160,5 @@ class Refresh(TokenRefreshView):
                 'AccessToken':serializer.validated_data['access'],
                 'RefreshToken':serializer.validated_data['refresh'],
                 }, status=status.HTTP_200_OK)
-        return Response({
-            'message':'No valido'
-        },status=status.HTTP_401_UNAUTHORIZED)
+            
+        return Response(status=status.HTTP_401_UNAUTHORIZED)
